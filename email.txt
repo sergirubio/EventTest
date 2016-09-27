@@ -1,0 +1,34 @@
+Today we did some testing trying to define the maximum data throughput 
+from notifd.
+
+We found that there is a reproduceable limit between 1200 and 1700 
+events/second. Once this point is reached we discover 2 types of error:
+
+  - Client (Taurus) starts giving API_EventTimeout periodically (10s or 
+30s); but the server continues pushing events at good rate.
+
+  - Client hungs completely (continuous timeout traces) and the 
+push_event starts to take very long to execute (~20ms for each push_event).
+
+In both cases the timeout can be linked to a sudden peak in notifd cpu 
+time followed by a fast increase in memory usage. In the second case the 
+cpu usage of the notifd decreases again, but not the memory usage. The 
+notifd cpu peak starts when the emmited events reach around 250000 since 
+the start of the program; but this number may depend of many factors and 
+not to be reproduceable.
+
+Note that in both cases the client was NEVER able to receive more than 
+1200 events/second; even when the client was not giving errors, every 
+event sent by the server above this rate was lost. It means that there 
+is a "grey zone" between 1200 and 1700 ev/sec where you are missing 
+events and no error is raised.
+
+As a comparison, with Tango8 we could reach 9000 events received by the 
+client ... but not a higher number. As soon as the number of 
+events/second reached 10000 we started getting "missed events" warnings 
+(but not crashes nor memory leaks).
+
+Attached a useless screenshot of the test,
+
+Sergi & Dani
+
