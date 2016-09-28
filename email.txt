@@ -1,3 +1,40 @@
+2016/09/28
+
+The test has been done with PyTango 9 + ZMQ on SuSE Leap (single host); 
+I used two emitter/receiver servers generating statistics for debugging.
+
+I did the test sending bursts of events for periods of 5 seconds at increasing 
+frequency (100 Hz, 200, 300, …); the values sent are the expected timestamps 
+for each value in an ideal world.
+
+Defininig a "limit" for the event system in a motion control loop is a matter of 
+deciding which delay is allowed between a hardware source and the client. The ValueDelay 
+trend in the plot tries to quantify the amount of time (in milliseconds) passed since the 
+HW generated the event and the client acknowledged (assuming buffering in the acquiring 
+server and that the events are sent sequentially).
+
+As you can see in the trends; soon after 300 events/second there's an increasing 
+difference between the expected event frequency and the real one. In the code I'm 
+compensating the threading waits to minimize the lost time; but still it's not able 
+to keep up with frequencies > 500 Hz. I blame for the time waste in push_change_event 
+that was found by Graziano Scalamera (see HDB++ meeting minutes); and maybe these 
+numbers can be improved in C++.
+
+See events-frequencies-T9.png
+
+The light blue and pink lines show values are attributes from the Emitter 
+(desired frequency vs achieved).
+The dark blue and black lines show values are attributes from the Receiver. 
+(received events and deviation from ideal).
+
+As long as event buffers are big enough; I got no data lost.
+
+It's pending to repeat the tests with notifd and other servers, suggestions are welcomed,
+graphs with different versions of tango will be uploaded to github.
+
+
+------------------------------------------------------------------------
+
 REPORT DONE ON NOVEMBER 2015
 
 Today we did some testing trying to define the maximum data throughput 
