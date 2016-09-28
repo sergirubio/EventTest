@@ -42,6 +42,8 @@ class EventTestDS(DynamicDS):
     self._event.clear()
     self.rec_total = 0
     self.sent_total = 0
+    self.value_delay = 0
+    self.avg_delay = 0.
     self.last_check = time.time()
     self.last_total = self.sent_total
     self.lost_time = 0
@@ -49,6 +51,7 @@ class EventTestDS(DynamicDS):
     self._timewait = self.PushThread or 1e9
     self.eids = []
     self.buffer = []
+    self.send_buffer = []
 
     for attr in EventTestDSClass.attr_list:
       if fn.inCl(attr,self.UseEvents):
@@ -70,20 +73,23 @@ class EventTestDS(DynamicDS):
   ## Put your methods here
   
   def push_loop(self):
+    self._done.set()
+    
     while True:
 
       while self._stop.isSet():
         self._event.wait(.01)
-        
+
+      self._done.clear()
       print('Starting push_loop(%s)'%self._timewait)
       print('Sending %d events in bunches of %d every %f seconds'%(
         self.MaxEvents,self.ConsecutiveEvents,self._timewait))
       
-      t0,t1 = time.time(),0
-
+      t0,t1,ts,self.send_buffer = time.time(),0,0,[]
+      tnext = t0 + self._timewait
       while not self._stop.isSet():
 
-        tnext = time.time()+self._timewait
+        ts = time.time()
         self._event.clear()
 
         if self.MaxEvents and self.sent_total==self.MaxEvents:
@@ -93,9 +99,12 @@ class EventTestDS(DynamicDS):
             print('Sending finished after %f seconds (%f expected)'%(t1,te))
 
         else:
+          if not self.send_buffer:
+            self.send_buffer = [t0+i*self._timewait for i in range(int(self.MaxEvents))]
           for i in range(self.ConsecutiveEvents):
-            self.read_CurrentTime()
+            self.read_CurrentTime(value=tnext)#self.send_buffer.pop(0))
         
+        tnext = ts+self._timewait
         tw = tnext-time.time()
         self._event.wait(max((tw,1e-5)))
 
@@ -124,6 +133,19 @@ class EventTestDS(DynamicDS):
     """
     self.rec_total+=1
     self.buffer.append((time.time(),data))
+    try:
+      if hasattr(data,'attr_value'):
+        value =data.attr_value.value
+        delay = time.time()-value
+        self.value_delay = delay
+        if self.rec_total <= 1:
+          self.avg_delay = delay
+        elif self.rec_total == 2:
+          self.avg_delay = (delay+self.avg_delay)/2.
+        else:
+          self.avg_delay = ((delay/self.rec_total)+self.avg_delay)/(1+1./self.rec_total)
+    except:
+      pass #traceback.print_exc()
     while len(self.buffer) > self.BufferSize: self.buffer.pop(0)
     self.send_event('EventsReceivedTotal',self.rec_total)
     
@@ -131,7 +153,7 @@ class EventTestDS(DynamicDS):
     #print('In send_event(%s,%s)'%(attr_name,data))
     if self.MaxEvents and self.sent_total>=self.MaxEvents:
       return
-    t0 = time.time()    
+    #t0 = time.time()    
     try:
       if fn.inCl(attr_name,self.UseEvents):
         self.sent_total += 1
@@ -143,7 +165,7 @@ class EventTestDS(DynamicDS):
         self.push_change_event('EventsSentTotal',self.sent_total)#,time.time(),PyTango.AttrQuality.ATTR_VALID)
     except:
       traceback.print_exc()
-    self.lost_time+=time.time()-t0
+    #self.lost_time+=time.time()-t0
     
   ## Put your read_attribute methods here
   
@@ -170,15 +192,26 @@ class EventTestDS(DynamicDS):
     self.send_event('CurrentTime',t)
     if attr: 
       attr.set_value(t)
-      print('CurrentTime: %s'%t)
     return attr
 
   def read_LostTime(self, attr):
     attr.set_value(self.lost_time)    
     
-  def read_ChannelDelay(self, attr):
-    attr.set_value(self.rec_total)    
+  def read_ValueDelay(self, attr):
+    attr.set_value(1e3*self.value_delay)    
     
+  def read_EventFrequency(self, attr):
+    attr.set_value(1./self._timewait)    
+
+  def write_EventFrequency(self, attr):
+    try: #PyTango8
+        data = attr.get_write_value()
+    except:
+        data = []
+        attr.get_write_value(data)
+        data = data[0]
+    self._timewait = 1./data
+
   def read_InternalDelay(self, attr):
     attr.set_value(self.rec_total)    
 
@@ -217,8 +250,9 @@ class EventTestDSClass(DynamicDSClass):
     'EventsSentPerSecond':[[PyTango.DevDouble,PyTango.SCALAR,PyTango.READ]],
     'CurrentTime':[[PyTango.DevDouble,PyTango.SCALAR,PyTango.READ]],
     'LostTime':[[PyTango.DevDouble,PyTango.SCALAR,PyTango.READ]],
-    'ChannelDelay':[[PyTango.DevDouble,PyTango.SCALAR,PyTango.READ]],
+    'ValueDelay':[[PyTango.DevDouble,PyTango.SCALAR,PyTango.READ]],
     'InternalDelay':[[PyTango.DevDouble,PyTango.SCALAR,PyTango.READ]],
+    'EventFrequency':[[PyTango.DevDouble,PyTango.SCALAR,PyTango.READ_WRITE]],
     }
   
   def __init__(self,name):
