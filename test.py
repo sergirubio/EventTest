@@ -33,7 +33,7 @@ attrs = [
   'test/events/2/eventsreceivedpersecond',
   'test/events/2/valuedelay',
   ]
-cmd('taurustrend -r 100 %s &'%' '.join(attrs))
+cmd('taurustrend -r 200 %s &'%' '.join(attrs))
 
 print('Start Testing in 10 seconds ...')
 time.sleep(10.)
@@ -45,9 +45,9 @@ t1.EventFrequency = 0
 for f in range(100,2000,100):
  t1.EventFrequency = f
  t1.start()
- time.sleep(10.)
+ time.sleep(5.)
  t1.stop()
  t1.EventFrequency = 0
- time.sleep(5.)
+ time.sleep(7.)
  
 print('Finished')
