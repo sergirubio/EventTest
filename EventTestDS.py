@@ -3,6 +3,7 @@ import sys,traceback,re,time,threading
 import PyTango
 import fandango as fn
 from fandango.dynamic import DynamicDS,DynamicDSClass,DynamicAttribute
+from utils import ThreadedObject
 
 class EventTestDS(DynamicDS):
   """
@@ -11,107 +12,84 @@ class EventTestDS(DynamicDS):
   Events will be pushed for attributes in UseEvents property.
   
   In addition, the CurrentTime attribute will be pushed at 
-  PushThread period (if set in UseEvents).
+  PushPeriod period (if set in UseEvents).
   """
   
   def __init__(self,cl, name):
     DynamicDS.__init__(self,cl,name)
-
-    self._event = threading.Event()
-    self._stop = threading.Event()
-    self._done = threading.Event()
-    
-    self._timewait = 10.
-    self._thread = threading.Thread(target=self.push_loop)
-    self._thread.daemon = True
-
+    self.thread = ThreadedObject(self.push_loop)
     EventTestDS.init_device(self)
-    self._stop.set()
-    self._thread.start()
     
   def delete_device(self):
-    self._stop.set()
-    self._done.wait(3.)
-    self._done.clear()
+    self.thread.stop(wait=3.)
     
   def init_device(self):
     #self.setLogLevel('DEBUG')
     print("In "+self.get_name()+"::init_device()")
     self.get_DynDS_properties()
     self.set_state(PyTango.DevState.ON)
-    self._event.clear()
     self.rec_total = 0
     self.sent_total = 0
     self.value_delay = 0
     self.avg_delay = 0.
+    self.last_event = 0.
     self.last_check = time.time()
     self.last_total = self.sent_total
     self.lost_time = 0
     self.rec_per_second = 0.
-    self._timewait = self.PushThread or 1e9
+    self.period = self.PushPeriod or 1e9
     self.eids = []
     self.buffer = []
     self.send_buffer = []
+    self.subscribed = []
 
     for attr in EventTestDSClass.attr_list:
       if fn.inCl(attr,self.UseEvents):
         print('Enabling manual events for %s'%attr)
         self.set_change_event(attr,True,False)
-    for attr in self.EventSources:
-      d,a = attr.rsplit('/',1)
-      self.eids.append(PyTango.DeviceProxy(d).subscribe_event(a,PyTango.EventType.CHANGE_EVENT,self.event_received))
 
+    self.thread.set_period(self.period)
+    self.thread.set_start_hook(self.start_hook)
     print("Ready, waiting for Start()")
     
   def dyn_attr(self):
     DynamicDS.dyn_attr(self)
     
   def always_executed_hook(self):
-    #DynamicDS.always_executed_hook(self)
-    pass
+    for attr in self.EventSources:
+      if attr not in self.subscribed:
+        if fn.check_attribute(attr):
+          print('Subscribing to %s'%attr)
+          d,a = attr.rsplit('/',1)
+          self.eids.append(PyTango.DeviceProxy(d).subscribe_event(a,PyTango.EventType.CHANGE_EVENT,self.event_received))
+          self.subscribed.append(attr)
+    
+    pass #DynamicDS.always_executed_hook(self)
     
   ## Put your methods here
   
+  def start_hook(self,starttime):
+    try:
+      self.send_buffer = [starttime+i*self.period for i in range(int(self.MaxEvents))]
+    except Exception,e:
+      traceback.print_exc()
+      raise e
+    return [],{}
+  
   def push_loop(self):
-    self._done.set()
-    
-    while True:
 
-      while self._stop.isSet():
-        self._event.wait(.01)
+    if self.MaxEvents and self.sent_total==self.MaxEvents:
+      if not self.t1:
+        self.t1 = time.time()-self.thread.get_started()
+        te = (float(self.MaxEvents)/self.ConsecutiveEvents)*self.period
+        print('Sending finished after %f seconds (%f expected)'%(self.t1,te))
 
-      self._done.clear()
-      print('Starting push_loop(%s)'%self._timewait)
-      print('Sending %d events in bunches of %d every %f seconds'%(
-        self.MaxEvents,self.ConsecutiveEvents,self._timewait))
-      
-      t0,t1,ts,self.send_buffer = time.time(),0,0,[]
-      tnext = t0 + self._timewait
-      while not self._stop.isSet():
-
-        ts = time.time()
-        self._event.clear()
-
-        if self.MaxEvents and self.sent_total==self.MaxEvents:
-          if not t1:
-            t1 = time.time()-t0
-            te = (float(self.MaxEvents)/self.ConsecutiveEvents)*self._timewait
-            print('Sending finished after %f seconds (%f expected)'%(t1,te))
-
-        else:
-          if not self.send_buffer:
-            self.send_buffer = [t0+i*self._timewait for i in range(int(self.MaxEvents))]
-          for i in range(self.ConsecutiveEvents):
-            self.read_CurrentTime(value=tnext)#self.send_buffer.pop(0))
-        
-        tnext = ts+self._timewait
-        tw = tnext-time.time()
-        self._event.wait(max((tw,1e-5)))
-
-        if self.MaxEvents and self.sent_total<self.MaxEvents:
-          self.lost_time += time.time()-tnext #Thread switching also included
-          
-      self._done.set()
+    else:
+      for i in range(self.ConsecutiveEvents):
+        value = self.send_buffer.pop(0) #value=self.thread.get_next())
+        self.read_CurrentTime(value=value)
+        if self.sent_total in [int(f*self.MaxEvents) for f in (.25,.5,.75)]:
+          print(self.sent_total)
   
   def event_received(self,data):
     """
@@ -133,10 +111,11 @@ class EventTestDS(DynamicDS):
     """
     self.rec_total+=1
     self.buffer.append((time.time(),data))
+    self.last_event = time.time()
     try:
       if hasattr(data,'attr_value'):
         value =data.attr_value.value
-        delay = time.time()-value
+        delay = self.last_event-value
         self.value_delay = delay
         if self.rec_total <= 1:
           self.avg_delay = delay
@@ -198,10 +177,12 @@ class EventTestDS(DynamicDS):
     attr.set_value(self.lost_time)    
     
   def read_ValueDelay(self, attr):
-    attr.set_value(1e3*self.value_delay)    
+    if (time.time()-self.last_event)>1.:
+      self.value_delay = 0
+    attr.set_value(1e3*self.value_delay)
     
   def read_EventFrequency(self, attr):
-    attr.set_value(1./self._timewait)    
+    attr.set_value(1./self.period)    
 
   def write_EventFrequency(self, attr):
     try: #PyTango8
@@ -210,7 +191,11 @@ class EventTestDS(DynamicDS):
         data = []
         attr.get_write_value(data)
         data = data[0]
-    self._timewait = 1./data
+    try:
+      self.period = 1./data
+    except:
+      self.period = 1e9
+    self.thread.set_period(self.period)
 
   def read_InternalDelay(self, attr):
     attr.set_value(self.rec_total)    
@@ -218,13 +203,16 @@ class EventTestDS(DynamicDS):
   ## Put your commands here
   
   def Start(self):
-    print('Start()')
-    self._done.clear()
-    self._stop.clear()
+    self.t1 = 0
+    self.sent_total = 0
+    self.send_buffer = []
+    print('Start(%d events in bunches of %d every %f seconds)'%(
+      self.MaxEvents,self.ConsecutiveEvents,self.period))
+    self.thread.start()
     
   def Stop(self):
     print('Stop()')
-    self._stop.set()
+    self.thread.stop()
   
 class EventTestDSClass(DynamicDSClass):
   
@@ -232,7 +220,7 @@ class EventTestDSClass(DynamicDSClass):
     'BufferSize': [PyTango.DevLong,"Max Buffer Size for incoming events.",[ 100000 ] ],
     'UseEvents': [PyTango.DevVarStringArray,"",['EventsReceivedTotal','CurrentTime']],
     'EventSources': [PyTango.DevVarStringArray,"",[]],
-    'PushThread': [PyTango.DevDouble,"Internal thread period in seconds",[1.]],
+    'PushPeriod': [PyTango.DevDouble,"Internal thread period in seconds",[1.]],
     'MaxEvents': [PyTango.DevDouble,"maximum number of events to sent",[0]],
     'ConsecutiveEvents': [PyTango.DevLong,"maximum number of events to sent",[1]],
     }

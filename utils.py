@@ -19,12 +19,16 @@ class ThreadedObject(Object):
     self._stop = threading.Event()
     self._done = threading.Event()
     self._kill = threading.Event()
+    self._started = 0
     self._min_wait = 1e-5
     self._count = -1
     self._errors = 0
     self._delay = 0
     self._acc_delay = 0
     self._usage = 1.
+    self._next = time.time()+period
+    self._start_hook = self.start_hook
+    self._loop_hook = self.loop_hook
     
     self._threads = []
     for i in range(nthreads):
@@ -49,6 +53,7 @@ class ThreadedObject(Object):
   def get_acc_delay(self): return self._acc_delay
   def get_usage(self): return self._usage
   def get_next(self): return self._next
+  def get_started(self): return self._started
       
   def get_thread(self,i=0): return self._threads[i]
   def get_nthreads(self): return len(self._threads)
@@ -56,6 +61,8 @@ class ThreadedObject(Object):
     
   def set_period(self,period): self._timewait = period
   def set_target(self,target): self._target = target
+  def set_start_hook(self,target): self._start_hook = target
+  def set_loop_hook(self,target): self._loop_hook = target
   
   ## MAIN METHODS
     
@@ -65,16 +72,16 @@ class ThreadedObject(Object):
     self._stop.clear()
     
   def stop(self,wait=3.):
-    self._event.clear()
-    self._stop.set()
-    if wait:
-      self._done.wait(wait)
-      self._done.clear()
-      
-  def kill(self):
-    self._kill.set()
-    self._stop.set()
     self._event.set()
+    self._stop.set()
+    if not wait: wait = .1e-5
+    self._done.wait(wait)
+    self._done.clear()
+    self._event.clear()
+      
+  def kill(self,wait=3.):
+    self._kill.set()
+    self.stop(wait)
       
   def start_hook(self,*args,**kwargs):
     """ redefine at convenience, it will return the arguments for target method """
@@ -113,18 +120,24 @@ class ThreadedObject(Object):
       
       ts = time.time()
       try:
-        args,kwargs = self.start_hook(ts)
+        args,kwargs = self._start_hook(ts)
       except:
+        if self._errors < 10:
+          traceback.print_exc()        
         self._errors += 1
         args,kwargs = [],{}
 
       print('ThreadedObject.Start() ...')
+      self._started = time.time()
+      self._next = self._started + self._timewait
       while not self._stop.isSet():
         self._event.clear()
         try:
           if self._target:
             self._target(*args,**kwargs)
         except:
+          if self._errors < 10:
+            traceback.print_exc()          
           self._errors += 1
 
         t1 = time.time()
@@ -138,13 +151,17 @@ class ThreadedObject(Object):
         self._delay = ts>self._next and ts-self._next or 0
         self._acc_delay = self._acc_delay + self._delay
         try:
-          args,kwargs = self.loop_hook(ts)
+          args,kwargs = self._loop_hook(ts)
         except:
+          if self._errors < 10:
+            traceback.print_exc()
           self._errors += 1
           args,kwargs = [],{}
           
         self._count += 1
-          
+        
+      print('ThreadedObject.Stop(...)')
+      self._started = 0
       self._done.set() #Will not be cleared until stop/start() are called
   
     print('ThreadedObject.Kill() ...')
