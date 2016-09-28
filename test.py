@@ -51,6 +51,3 @@ for f in range(100,2000,100):
  time.sleep(5.)
  
 print('Finished')
-
-fn.get_device('dserver/eventestds/test1').kill()
-fn.get_device('dserver/eventestds/test2').kill()
