@@ -1,3 +1,5 @@
+REPORT DONE ON NOVEMBER 2015
+
 Today we did some testing trying to define the maximum data throughput 
 from notifd.
 
