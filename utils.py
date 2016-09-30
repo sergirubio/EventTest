@@ -27,6 +27,7 @@ class ThreadedObject(Object):
     self._acc_delay = 0
     self._usage = 1.
     self._next = time.time()+period
+    self._queue = []
     self._start_hook = self.start_hook
     self._loop_hook = self.loop_hook
     
@@ -60,6 +61,7 @@ class ThreadedObject(Object):
   def is_alive(self,i=0): return self.get_thread().is_alive()
     
   def set_period(self,period): self._timewait = period
+  def set_queue(self,queue): self._queue = queue
   def set_target(self,target): self._target = target
   def set_start_hook(self,target): self._start_hook = target
   def set_loop_hook(self,target): self._loop_hook = target
@@ -68,6 +70,8 @@ class ThreadedObject(Object):
     
   def start(self):
     #self._event.clear()
+    if self._started: 
+      self._stop()
     self._done.clear()
     self._stop.clear()
     
@@ -140,11 +144,16 @@ class ThreadedObject(Object):
             traceback.print_exc()          
           self._errors += 1
 
-        t1 = time.time()
-        self._next = ts+self._timewait
+        t1,tn = time.time(),ts+self._timewait
+        if self._queue:
+          while self._queue and self._queue[0]<self._next:
+            self._queue.pop(0)
+          if self._queue:
+            tn = self._queue[0]
+        
+        self._next = tn
         tw = self._next-t1
         self._usage = (t1-ts)/self._timewait
-        
         self._event.wait(max((tw,self._min_wait)))
         
         ts = time.time()
